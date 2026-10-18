@@ -49,6 +49,7 @@
     },
     "edge": {
       "backend": [
+        "edge-8be5c20",
         "edge-46eacf9",
         "edge-f04d1aa",
         "edge-ac2d4a5",
@@ -67,10 +68,10 @@
         "edge-136053d",
         "edge-c37ea6f",
         "edge-1bee573",
-        "edge-eb92462",
-        "edge-324d14f"
+        "edge-eb92462"
       ],
       "frontend": [
+        "edge-8be5c20",
         "edge-46eacf9",
         "edge-41559a7",
         "edge-f04d1aa",
@@ -89,8 +90,7 @@
         "edge-b10d174",
         "edge-136053d",
         "edge-1bee573",
-        "edge-eb92462",
-        "edge-324d14f"
+        "edge-eb92462"
       ]
     },
     "beta": {
