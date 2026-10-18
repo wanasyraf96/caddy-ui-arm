@@ -1,12 +1,14 @@
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 const require = createRequire(resolve(import.meta.dirname, '../../dev/package.json'));
 const { chromium } = require('playwright');
-import { requestKey, validateCapture } from '../../dev/playground/capture-format.js';
+import { requestKey } from '../../dev/playground/capture-format.js';
+import { buildResponseMap } from './replay.mjs';
 
 const exec = promisify(execFile);
 const root = resolve(import.meta.dirname, '../..');
@@ -65,33 +67,22 @@ function serveStatic(directory) {
     });
 }
 
-function buildResponseMap(capture) {
-    const responses = new Map();
-    for (const scenario of capture.scenarios) {
-        for (const record of scenario.requests) {
-            const key = requestKey(record.request);
-            if (!responses.has(key)) responses.set(key, record);
-        }
-    }
-    return responses;
-}
-
-async function run() {
-    await buildFrontend();
-
-    const capture = validateCapture(JSON.parse(await readFile(resolve(import.meta.dirname, 'captures/screenshots.json'), 'utf8')));
+export async function renderScreenshots({ capturePath = resolve(import.meta.dirname, 'captures/screenshots.json'), outputDirectory = screenshotsDir } = {}) {
+    const capture = JSON.parse(await readFile(capturePath, 'utf8'));
     const responses = buildResponseMap(capture);
+    await buildFrontend();
+    await mkdir(outputDirectory, { recursive: true });
 
     const server = await serveStatic(dist);
     const { port } = server.address();
     const origin = `http://127.0.0.1:${port}`;
     console.log(`Serving frontend at ${origin}`);
 
-    const browser = await chromium.launch({
-        ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}),
-    });
-
+    let browser;
     try {
+        browser = await chromium.launch({
+            ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}),
+        });
         const context = await browser.newContext({
             viewport: { width: 1920, height: 1080 },
             deviceScaleFactor: 1,
@@ -100,6 +91,7 @@ async function run() {
         });
 
         const page = await context.newPage();
+        const misses = new Set();
 
         // Freeze clock for deterministic timestamps.
         await page.clock.install({ time: new Date('2025-06-15T14:30:00Z') });
@@ -120,7 +112,7 @@ async function run() {
             const key = requestKey({ method: request.method(), path, body });
             const record = responses.get(key);
             if (!record) {
-                console.warn(`  Unrecorded: ${request.method()} ${url.pathname}${url.search}`);
+                misses.add(`${request.method()} ${url.pathname}${url.search}`);
                 await route.fulfill({ status: 500, contentType: 'application/json',
                     body: JSON.stringify({ error: 'Unrecorded request', path: url.pathname }) });
                 return;
@@ -147,33 +139,32 @@ async function run() {
             console.log(`Capturing ${view.name}...`);
             await page.goto(`${origin}${view.path}`, { waitUntil: 'networkidle' });
 
-            // Wait for the view-specific content to appear.
-            try {
-                await page.waitForSelector(view.ready, { timeout: 10000 });
-            } catch {
-                console.warn(`  Warning: ready selector "${view.ready}" not found for ${view.name}, capturing anyway.`);
-            }
+            await page.waitForSelector('.shell', { timeout: 10000 });
+            await page.waitForSelector(view.ready, { timeout: 10000 });
 
             // Extra settle time for animations and lazy rendering.
             await page.waitForTimeout(500);
+            if (misses.size || errors.length) {
+                throw new Error(`Screenshot ${view.name} failed: ${JSON.stringify({ unrecorded: [...misses], errors })}`);
+            }
 
             await page.screenshot({
-                path: resolve(screenshotsDir, `${view.name}.png`),
+                path: resolve(outputDirectory, `${view.name}.png`),
                 fullPage: false,
             });
             console.log(`  Saved ${view.name}.png`);
         }
 
-        if (errors.length) {
-            console.error('Page errors during capture:', errors);
-            process.exitCode = 1;
-        }
     } finally {
-        await browser.close();
-        server.close();
+        await browser?.close();
+        server.closeAllConnections();
+        await new Promise(resolve => server.close(resolve));
     }
 
-    console.log(`Generated ${VIEWS.length} screenshots in docs/src/screenshots/.`);
+    console.log(`Generated ${VIEWS.length} screenshots in ${outputDirectory}.`);
+    return VIEWS.map(view => view.name);
 }
 
-run().catch(error => { console.error(error); process.exitCode = 1; });
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+    renderScreenshots().catch(error => { console.error(error); process.exitCode = 1; });
+}

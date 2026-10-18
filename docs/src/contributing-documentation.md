@@ -89,6 +89,22 @@ node .github/scripts/dockerhub-docs.mjs --dry-run
 
 ## Make the change easy to review
 
+### Refresh documentation screenshots
+
+`npm run docs:screenshots` renders the checked-in API capture without a running backend.
+After API or authentication contract changes, first run `npm run docs:screenshots:capture`
+with Docker and backend dependencies available, then render the screenshots again.
+Live capture enrolls an isolated administrator and sends session-bound CSRF tokens
+for setup and configuration writes. Cookies, credentials and recovery keys are not
+retained; the captured CSRF response contains an offline placeholder.
+
+Commit the refreshed `docs/screenshots/captures/screenshots.json` alongside capture
+changes. The renderer rejects unauthenticated snapshots, unrecorded requests and
+views that never become ready. `npm run test:screenshots --prefix docs` exercises
+live capture, all eight views, cleanup and rejection of incomplete replay data.
+
+### Review documentation changes
+
 Use fenced `mermaid` code blocks for diagrams. They render locally in the book
 and follow the selected light/dark theme; preview diagrams in the built book.
 The project tree is generated automatically. Add file/directory comments in

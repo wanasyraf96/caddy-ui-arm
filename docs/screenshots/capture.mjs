@@ -16,6 +16,7 @@ const root = resolve(import.meta.dirname, '../..');
 const CADDYFILE_RICH = `{
     admin 0.0.0.0:2019
     auto_https off
+    metrics
 }
 
 :80 {
@@ -61,7 +62,7 @@ export async function captureScreenshots({ output = resolve(import.meta.dirname,
         if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && !requestContexts.get(socketPath)?.['X-CSRF-Token']) await api('/auth/csrf');
         return new Promise((resolve, reject) => {
             const call = request({ socketPath, path: '/api' + path, method, timeout: 5000, signal: startup.signal,
-                headers: { ...requestContexts.get(socketPath), 'Content-Type': 'application/json', 'X-Instance-Id': 'default' } }, response => {
+                headers: { ...requestContexts.get(socketPath), 'Content-Type': typeof body === 'string' ? 'text/plain' : 'application/json', 'X-Instance-Id': 'default' } }, response => {
                 const chunks = [];
                 response.on('data', chunk => chunks.push(chunk));
                 response.on('error', reject);
@@ -83,7 +84,7 @@ export async function captureScreenshots({ output = resolve(import.meta.dirname,
             });
             call.on('timeout', () => call.destroy(new Error(`Capture request timed out: ${method} ${path}`)));
             call.on('error', reject);
-            if (body !== null) call.write(JSON.stringify(body));
+            if (body !== null) call.write(typeof body === 'string' ? body : JSON.stringify(body));
             call.end();
         });
     }
@@ -123,16 +124,17 @@ export async function captureScreenshots({ output = resolve(import.meta.dirname,
         if (!ready) throw new Error(`Capture backend did not become ready.\n${outputLog}`);
 
         await successful('/auth/setup', 'POST', { username: 'capture-administrator', password: randomBytes(24).toString('base64url') });
+        const csrfRecord = await successful('/auth/csrf');
+        csrfRecord.response.body.csrfToken = 'offline-preview-context';
+        await successful('/settings', 'PUT', { firstTimeRun: false, language: 'en', theme: 'dark' });
 
         // Enrich state: enable metrics, set server label, add route note.
         await successful('/metrics/config', 'PUT', { enabled: true });
         await successful('/server-names/srv0', 'PUT', { name: 'Production HTTPS' });
-        await successful('/route-notes', 'PUT', { notes: { ':80/api/*': 'Home Assistant API' } });
+        await successful('/route-notes/' + encodeURIComponent(':80'), 'PUT', { note: 'Home services' });
 
-        // Write the richer Caddyfile and reload so routes are visible.
-        const adminHeaders = { 'Content-Type': 'text/caddyfile', Origin: 'http://0.0.0.0:2019' };
-        const loadResult = await fetch(info.instance.adminUrl + '/load', { method: 'POST', headers: adminHeaders, body: CADDYFILE_RICH, signal: AbortSignal.any([startup.signal, AbortSignal.timeout(5000)]) });
-        assert.equal(loadResult.ok, true, await loadResult.text());
+        // Exercise the real session/CSRF-protected configuration-write path.
+        await successful('/caddyfile?fmt=false&sort=false', 'PUT', CADDYFILE_RICH);
 
         // Generate some log entries by hitting the Caddy instance.
         for (let i = 0; i < 5; i++) {
@@ -141,71 +143,80 @@ export async function captureScreenshots({ output = resolve(import.meta.dirname,
         }
         await new Promise(resolve => setTimeout(resolve, 500));
 
-        // Save caddyfile to create a history entry.
-        await successful('/caddyfile', 'PUT', { content: CADDYFILE_RICH });
-
         // Configure notifications (provider config, not sending).
         await successful('/notifications/config', 'PUT', {
-            enabled: true, provider: 'ntfy', ntfyUrl: 'https://ntfy.example.com/caddy-alerts',
-            triggers: { upstreamOffline: true, upstreamOnline: true, certExpiring: true, updateAvailable: true },
-            cooldownMinutes: 30,
+            enabled: true, provider: 'ntfy', ntfy: { url: 'https://ntfy.example.com/caddy-alerts' },
+            triggers: { upstreamOffline: false, upstreamOnline: false, certExpiring: false, updateAvailable: false, routeOffline: false, routeOnline: false },
+            debounceMinutes: 30,
         });
 
-        // Add a second manual instance for the instances view.
+        // Both entries belong to disposable Caddy instances, so capture never
+        // probes an unrelated LAN service to populate the Instances view.
+        const staging = await harness.create('staging');
         await successful('/instances', 'POST', {
-            name: 'Staging Server', adminUrl: 'http://192.168.1.50:2019',
-            configPath: '/etc/caddy/Caddyfile', logPath: '/var/log/caddy/access.log',
-            dataPath: '/var/lib/caddy', containerName: '', serverName: 'srv0',
+            ...staging.instance, name: 'Staging Server',
         });
 
         // Capture global endpoints.
         const requests = [];
-        requests.push(await api('/settings'));
-        requests.push(await api('/custom-themes'));
-        requests.push(await api('/version'));
-        requests.push(await api('/instances'));
-        const authCheck = await api('/auth/status');
+        requests.push(await successful('/languages'));
+        requests.push(await successful('/settings'));
+        requests.push(await successful('/custom-themes'));
+        requests.push(await successful('/version'));
+        requests.push(await successful('/version?frontend=' + encodeURIComponent(process.env.VITE_APP_VERSION || 'dev')));
+        requests.push(await successful('/instances'));
+        requests.push(await successful('/instances/status'));
+        const authCheck = await successful('/auth/status');
         requests.push(authCheck);
 
         // Dashboard.
-        requests.push(await api('/status'));
-        requests.push(await api('/status/process'));
-        requests.push(await api('/server-names'));
-        requests.push(await api('/health'));
+        requests.push(await successful('/status'));
+        requests.push(await successful('/status/process'));
+        requests.push(await successful('/server-names'));
+        requests.push(await successful('/health'));
 
         // Caddyfile.
-        requests.push(await api('/caddyfile'));
-        requests.push(await api('/caddyfile/history'));
+        requests.push(await successful('/caddyfile'));
+        const history = await successful('/caddyfile/history');
+        requests.push(history);
+        for (const entry of history.response.body) requests.push(await successful('/caddyfile/history/' + encodeURIComponent(entry.filename)));
 
         // Routes.
-        requests.push(await api('/routes'));
-        requests.push(await api('/tls'));
-        requests.push(await api('/route-notes'));
-        requests.push(await api('/routes/maintenance'));
-        requests.push(await api('/health/uptime'));
-        requests.push(await api('/health/uptime?kind=route'));
+        requests.push(await successful('/routes'));
+        requests.push(await successful('/tls'));
+        requests.push(await successful('/route-notes'));
+        requests.push(await successful('/routes/maintenance'));
+        requests.push(await successful('/health/uptime'));
+        requests.push(await successful('/health/uptime?kind=route'));
 
         // TLS (shares /tls from routes above).
 
         // Logs.
-        requests.push(await api('/logs'));
-        requests.push(await api('/logs/config'));
+        requests.push(await successful('/logs'));
+        requests.push(await successful('/logs/config'));
 
         // Metrics.
-        requests.push(await api('/metrics'));
-        requests.push(await api('/metrics/config'));
+        requests.push(await successful('/metrics'));
+        requests.push(await successful('/metrics/config'));
 
         // Notifications.
-        requests.push(await api('/notifications/config'));
+        requests.push(await successful('/notifications/config'));
 
         // Instances — server-names/all and per-instance server query.
-        requests.push(await api('/server-names/all'));
+        requests.push(await successful('/server-names/all'));
+        requests.push(await successful('/instances/servers?adminUrl=' + encodeURIComponent(info.instance.adminUrl)));
+        requests.push(await successful('/instances/servers?adminUrl=' + encodeURIComponent(staging.instance.adminUrl)));
 
         const { stdout: commit } = await exec('git', ['rev-parse', 'HEAD'], { cwd: root });
         result = validateCapture({ formatVersion: CAPTURE_VERSION,
             source: { commit: commit.trim(), caddyImage: IMAGE },
+            csrfContext: { source: { commit: commit.trim() }, record: normalizeCapture(csrfRecord) },
             normalization: ['Request IDs', 'ISO timestamps', 'Private capture addresses and paths; measurements remain as observed'],
             scenarios: normalizeCapture([{ id: 'screenshots', requests }], [
+                [encodeURIComponent(staging.instance.adminUrl), encodeURIComponent('http://caddy-staging:2019')],
+                [staging.instance.adminUrl, 'http://caddy-staging:2019'],
+                [staging.instance.containerName, 'caddy-ui-dev-staging'],
+                [encodeURIComponent(info.instance.adminUrl), encodeURIComponent('http://caddy-screenshots:2019')],
                 [info.instance.adminUrl, 'http://caddy-screenshots:2019'],
                 [new URL(info.instance.adminUrl).host, 'caddy-screenshots:2019'],
                 [info.httpUrl, 'http://caddy-screenshots:80'],
