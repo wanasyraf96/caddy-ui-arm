@@ -3,10 +3,14 @@ export const CAPTURE_VERSION = 1;
 export function normalizeCapture(value, replacements = []) {
     const ids = new Map();
     let firstTimestamp;
+    // Keys get the explicit replacements too, e.g. upstream addresses keying uptime stats.
+    function replace(value) {
+        for (const [from, to] of replacements) value = value.replaceAll(from, to);
+        return value;
+    }
     function visit(value) {
         if (typeof value === 'string') {
-            for (const [from, to] of replacements) value = value.replaceAll(from, to);
-            return value.replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, id => {
+            return replace(value).replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, id => {
                 id = id.toLowerCase();
                 if (!ids.has(id)) ids.set(id, `00000000-0000-4000-8000-${String(ids.size + 1).padStart(12, '0')}`);
                 return ids.get(id);
@@ -17,7 +21,7 @@ export function normalizeCapture(value, replacements = []) {
             });
         }
         if (Array.isArray(value)) return value.map(visit);
-        if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, visit(child)]));
+        if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, child]) => [replace(key), visit(child)]));
         return value;
     }
     return visit(value);

@@ -1,42 +1,73 @@
 import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { request } from 'node:http';
-import { mkdtemp, mkdir, writeFile, rename, rm } from 'node:fs/promises';
+import { createServer, request } from 'node:http';
+import { mkdtemp, mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { backendEnvironment, checkDocker, Harness, IMAGE } from '../../dev/dev-caddy/harness.mjs';
+import { backendEnvironment, checkDocker, docker, Harness, IMAGE } from '../../dev/dev-caddy/harness.mjs';
 import { CAPTURE_VERSION, normalizeCapture, validateCapture } from '../../dev/playground/capture-format.js';
 
 const exec = promisify(execFile);
 const root = resolve(import.meta.dirname, '../..');
 
-const CADDYFILE_RICH = `{
+// Each site proxies to a listener the capture process owns, so upstream checks
+// are real and online; addresses are rewritten to these LAN-style ones.
+const SITES = [
+    { host: 'homeassistant.internal', title: 'Home Assistant', upstream: '192.168.1.10:8123' },
+    { host: 'jellyfin.internal', title: 'Jellyfin', upstream: '192.168.1.20:8096' },
+    { host: 'immich.internal', title: 'Immich', upstream: '192.168.1.30:2283' },
+];
+
+function richCaddyfile(upstreams) {
+    const sites = SITES.map((site, i) => `${site.host} {
+    # ${site.title}
+    import access_log
+    tls internal
+
+    handle /healthz {
+        respond "OK" 200
+    }
+
+    handle {
+        reverse_proxy ${upstreams[i]}
+    }
+}
+`);
+    return `{
     admin 0.0.0.0:2019
-    auto_https off
+    auto_https disable_redirects
     metrics
 }
 
-:80 {
+(access_log) {
     log {
         output file /data/dev-caddy/logs/access.log
         format json
     }
-
-    handle /api/* {
-        reverse_proxy 192.168.1.10:8080
-    }
-
-    handle /media/* {
-        reverse_proxy 192.168.1.20:8096
-    }
-
-    respond /health "ok" 200
-    respond "Screenshot capture instance" 200
 }
-`;
+
+${sites.join('\n')}`;
+}
+
+function listen(server) {
+    return new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', () => resolve(`127.0.0.1:${server.address().port}`));
+    });
+}
+
+async function until(signal, timeoutMs, description, check) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        signal.throwIfAborted();
+        if (await check()) return;
+        await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    throw new Error(`Timed out waiting for ${description}.`);
+}
 
 export async function captureScreenshots({ output = resolve(import.meta.dirname, 'captures/screenshots.json'), backendEntry = resolve(root, 'src/backend/src/index.js'), onNamespace = () => {} } = {}) {
     if (process.platform === 'win32') throw new Error('Capture requires a Unix socket.');
@@ -48,6 +79,7 @@ export async function captureScreenshots({ output = resolve(import.meta.dirname,
     const directory = await mkdtemp(resolve(tmpdir(), 'caddy-ui-screenshots-'));
     const harness = new Harness(randomBytes(8).toString('hex'));
     let backend;
+    const upstreamServers = SITES.map(() => createServer((req, res) => res.end('OK')));
     let outputLog = '';
     let result;
     let failure;
@@ -99,10 +131,12 @@ export async function captureScreenshots({ output = resolve(import.meta.dirname,
         onNamespace(harness.project);
         assert.deepEqual(await harness.names(), []);
         assert.deepEqual(await harness.names('volume'), []);
+        const upstreams = await Promise.all(upstreamServers.map(listen));
         const info = await harness.create('screenshots');
+        const { '.': appVersion } = JSON.parse(await readFile(resolve(root, '.release-please-manifest.json'), 'utf8'));
         const env = { ...backendEnvironment(directory, info.instance), PORT: socketPath,
             DOCKER_SOCKET: fileURLToPath(endpoint.replace(/^unix:/, 'file:')),
-            APP_VERSION: '1.20.0', CADDY_UI_PUBLIC_METRICS: 'false', CADDY_UI_ADDITIONAL_LANGUAGES: '',
+            APP_VERSION: appVersion, CADDY_UI_PUBLIC_METRICS: 'false', CADDY_UI_ADDITIONAL_LANGUAGES: '',
             CADDY_SERVER_NAME: 'srv0', NODE_ENV: 'development' };
         for (const key of ['CADDY_UI_USER', 'CADDY_UI_PASSWORD', 'JWT_SECRET']) delete env[key];
         await mkdir(resolve(directory, 'backend'), { recursive: true });
@@ -128,20 +162,32 @@ export async function captureScreenshots({ output = resolve(import.meta.dirname,
         csrfRecord.response.body.csrfToken = 'offline-preview-context';
         await successful('/settings', 'PUT', { firstTimeRun: false, language: 'en', theme: 'dark' });
 
-        // Enrich state: enable metrics, set server label, add route note.
+        // Enrich state: enable metrics and set a server label. Route titles
+        // come from the Caddyfile's title comments.
         await successful('/metrics/config', 'PUT', { enabled: true });
         await successful('/server-names/srv0', 'PUT', { name: 'Production HTTPS' });
-        await successful('/route-notes/' + encodeURIComponent(':80'), 'PUT', { note: 'Home services' });
 
         // Exercise the real session/CSRF-protected configuration-write path.
-        await successful('/caddyfile?fmt=false&sort=false', 'PUT', CADDYFILE_RICH);
+        await successful('/caddyfile?fmt=false&sort=false', 'PUT', richCaddyfile(upstreams));
 
-        // Generate some log entries by hitting the Caddy instance.
-        for (let i = 0; i < 5; i++) {
-            await fetch(info.httpUrl + '/health', { signal: AbortSignal.timeout(2000) }).catch(() => {});
-            await fetch(info.httpUrl + '/', { signal: AbortSignal.timeout(2000) }).catch(() => {});
-        }
-        await new Promise(resolve => setTimeout(resolve, 500));
+        // Caddy issues the internal certificates in the background after a load.
+        await until(startup.signal, 30000, 'internal certificates', async () => {
+            const tls = await api('/tls');
+            return tls.response.status === 200 && tls.response.body.filter(cert => cert.status === 'valid').length === SITES.length;
+        });
+
+        // The sites only listen on HTTPS inside the container, so generate
+        // access log entries and request metrics from there.
+        const hosts = SITES.map(site => site.host).join(' ');
+        await docker(['exec', info.instance.containerName, 'sh', '-c',
+            `echo "127.0.0.1 ${hosts}" >> /etc/hosts; for i in 1 2 3 4; do for host in ${hosts}; do wget -q -O /dev/null "https://$host/healthz" || exit 1; done; done`]);
+
+        // The upstream monitor records every 30s; wait for two samples of
+        // each upstream so uptime percentages are real measurements.
+        await until(startup.signal, 75000, 'upstream uptime history', async () => {
+            const uptime = (await api('/health/uptime')).response.body;
+            return upstreams.every(upstream => uptime[upstream]?.total >= 2);
+        });
 
         // Configure notifications (provider config, not sending).
         await successful('/notifications/config', 'PUT', {
@@ -213,6 +259,7 @@ export async function captureScreenshots({ output = resolve(import.meta.dirname,
             csrfContext: { source: { commit: commit.trim() }, record: normalizeCapture(csrfRecord) },
             normalization: ['Request IDs', 'ISO timestamps', 'Private capture addresses and paths; measurements remain as observed'],
             scenarios: normalizeCapture([{ id: 'screenshots', requests }], [
+                ...upstreams.map((upstream, i) => [upstream, SITES[i].upstream]),
                 [encodeURIComponent(staging.instance.adminUrl), encodeURIComponent('http://caddy-staging:2019')],
                 [staging.instance.adminUrl, 'http://caddy-staging:2019'],
                 [staging.instance.containerName, 'caddy-ui-dev-staging'],
@@ -236,6 +283,11 @@ export async function captureScreenshots({ output = resolve(import.meta.dirname,
                 backend.kill('SIGTERM');
             });
         } catch (error) { cleanupErrors.push(error); }
+    }
+    for (const server of upstreamServers) {
+        if (!server.listening) continue;
+        server.closeAllConnections();
+        await new Promise(resolve => server.close(resolve));
     }
     try { await harness.removeAll({ confirmed: true, purge: true }); } catch (error) { cleanupErrors.push(error); }
     try { await rm(directory, { recursive: true, force: true }); } catch (error) { cleanupErrors.push(error); }

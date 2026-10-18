@@ -7,7 +7,7 @@ import { Harness } from '../../dev/dev-caddy/harness.mjs';
 import { captureScreenshots } from './capture.mjs';
 import { renderScreenshots } from './screenshot.mjs';
 
-test('real authenticated documentation capture renders all views and rejects missing API data', { timeout: 120000 }, async t => {
+test('real authenticated documentation capture renders all views and rejects missing API data', { timeout: 240000 }, async t => {
     const directory = await mkdtemp(join(tmpdir(), 'caddy-docs-check-'));
     t.after(() => rm(directory, { recursive: true, force: true }));
     const capturePath = join(directory, 'capture.json');
@@ -18,7 +18,9 @@ test('real authenticated documentation capture renders all views and rejects mis
     assert.deepEqual(await harness.names('volume'), []);
     const records = capture.scenarios[0].requests;
     assert.equal(records.find(record => record.request.path === '/auth/status').response.body.authenticated, true);
-    assert.equal(records.find(record => record.request.path === '/route-notes').response.body[':80'], 'Home services');
+    assert.equal(records.find(record => record.request.path === '/route-notes').response.body['homeassistant.internal'], 'Home Assistant');
+    assert(Object.values(records.find(record => record.request.path === '/health/uptime').response.body).every(stats => stats.pct === 100));
+    assert.equal(records.find(record => record.request.path === '/status').response.body.upstreamsOnline, 3);
     assert.equal(capture.csrfContext.record.response.body.csrfToken, 'offline-preview-context');
     const serialized = await readFile(capturePath, 'utf8');
     assert(!serialized.includes('set-cookie'));
