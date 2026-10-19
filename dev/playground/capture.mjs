@@ -262,7 +262,13 @@ export async function captureDashboard({ output = resolve(import.meta.dirname, '
         empty.apps.http.servers = {};
         const reload = await fetch(info.instance.adminUrl + '/load', { method: 'POST', headers: adminHeaders, body: JSON.stringify(empty), signal: AbortSignal.any([startup.signal, AbortSignal.timeout(5000)]) });
         assert.equal(reload.ok, true, await reload.text());
-        const noServers = await snapshot('dashboard-empty');
+        let noServers;
+        const emptyDeadline = Date.now() + 15000;
+        while (Date.now() < emptyDeadline) {
+            noServers = await snapshot('dashboard-empty');
+            if (noServers.requests[0].response.body.serverCount === 0) break;
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
         assert.equal(noServers.requests[0].response.body.online, true, JSON.stringify(noServers.requests[0].response.body));
         assert.equal(noServers.requests[0].response.body.serverCount, 0);
         const routesEmpty = await routeSnapshot('routes-empty');
