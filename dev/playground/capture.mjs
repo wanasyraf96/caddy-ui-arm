@@ -217,7 +217,14 @@ export async function captureDashboard({ output = resolve(import.meta.dirname, '
         const orphaned = structuredClone(original);
         orphaned.apps.tls = { automation: { policies: [] } };
         await loadConfig(orphaned);
-        const tlsOrphaned = { id: 'tls-internal-orphaned', requests: [await successful('/tls')] };
+        let orphanRecord;
+        const orphanDeadline = Date.now() + 15000;
+        while (Date.now() < orphanDeadline) {
+            orphanRecord = await successful('/tls');
+            if (orphanRecord.response.body.some(cert => cert.domain === 'preview.internal' && cert.status === 'orphaned')) break;
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        const tlsOrphaned = { id: 'tls-internal-orphaned', requests: [orphanRecord] };
         assert.equal(tlsOrphaned.requests[0].response.body[0].status, 'orphaned');
 
         // A separate real local-mode backend has no Docker socket. Discovery
