@@ -308,6 +308,87 @@ app.example.com {
     });
 });
 
+describe('updateGlobalBlock structural validation', () => {
+    function assertBalancedBraces(text) {
+        let depth = 0;
+        for (const ch of text) {
+            if (ch === '{') depth++;
+            if (ch === '}') depth--;
+            if (depth < 0) throw new Error('Unexpected closing brace');
+        }
+        if (depth !== 0) throw new Error(`Unbalanced braces: depth=${depth}`);
+    }
+
+    const NESTED_CADDYFILE = `{
+\tacme_dns cloudflare {
+\t\tapi_token {env.CF_API_TOKEN}
+\t}
+\ton_demand_tls {
+\t\task http://localhost:5555/check
+\t}
+}
+
+app.example.com {
+    reverse_proxy localhost:8080
+}`;
+
+    const LOG_CONFIG = {
+        enabled: true,
+        path: '/var/log/caddy/access.log',
+        rollSize: '50mb',
+        rollKeep: 5,
+        format: 'json',
+        level: 'INFO',
+    };
+
+    it('produces balanced braces when adding log to nested globals', () => {
+        const result = updateGlobalBlock(NESTED_CADDYFILE, LOG_CONFIG);
+        assertBalancedBraces(result);
+    });
+
+    it('produces balanced braces when removing log from nested globals', () => {
+        const withLog = updateGlobalBlock(NESTED_CADDYFILE, LOG_CONFIG);
+        const result = updateGlobalBlock(withLog, { enabled: false });
+        assertBalancedBraces(result);
+    });
+
+    it('round-trips: parseLogConfig reads back what updateGlobalBlock wrote', () => {
+        const result = updateGlobalBlock(NESTED_CADDYFILE, LOG_CONFIG);
+        const parsed = parseLogConfig(result);
+        expect(parsed.enabled).toBe(true);
+        expect(parsed.path).toBe(LOG_CONFIG.path);
+        expect(parsed.rollSize).toBe(LOG_CONFIG.rollSize);
+        expect(parsed.rollKeep).toBe(LOG_CONFIG.rollKeep);
+        expect(parsed.format).toBe(LOG_CONFIG.format);
+        expect(parsed.level).toBe(LOG_CONFIG.level);
+    });
+
+    it('round-trips through multiple enable/disable cycles', () => {
+        let content = NESTED_CADDYFILE;
+        for (let i = 0; i < 3; i++) {
+            content = updateGlobalBlock(content, LOG_CONFIG);
+            assertBalancedBraces(content);
+            expect(parseLogConfig(content).enabled).toBe(true);
+
+            content = updateGlobalBlock(content, { enabled: false });
+            assertBalancedBraces(content);
+            expect(parseLogConfig(content).enabled).toBe(false);
+        }
+        expect(content).toContain('acme_dns cloudflare {');
+        expect(content).toContain('on_demand_tls {');
+    });
+
+    it('log directive stays at global depth, not inside acme_dns', () => {
+        const result = updateGlobalBlock(NESTED_CADDYFILE, LOG_CONFIG);
+        const lines = result.split('\n');
+        const logLine = lines.find(l => /^\s*log\s*\{/.test(l));
+        const acmeLine = lines.find(l => /^\s*acme_dns/.test(l));
+        const logIndent = logLine.match(/^(\s*)/)[1].length;
+        const acmeIndent = acmeLine.match(/^(\s*)/)[1].length;
+        expect(logIndent).toBe(acmeIndent);
+    });
+});
+
 describe('extractGlobalBlock', () => {
     it('returns null when no global block exists', () => {
         expect(extractGlobalBlock('app.example.com {\n}')).toBeNull();

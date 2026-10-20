@@ -135,10 +135,10 @@ function updateGlobalBlock(content, logConfig) {
     }
 
     const newInner = logBlock
-        ? `${inner.trimEnd()}\n${logBlock}\n`
-        : inner;
+        ? `${inner.trimEnd()}\n${logBlock}`
+        : inner.trimEnd();
 
-    const newGlobal = `{${newInner}}`;
+    const newGlobal = `{\n${newInner}\n}`;
     return content.replace(global.text, newGlobal);
 }
 
