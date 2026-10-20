@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildLogBlock, parseLogConfig, updateGlobalBlock } from '../src/routes/logs.js';
+import { buildLogBlock, parseLogConfig, updateGlobalBlock, extractGlobalBlock, extractDirectiveBlock } from '../src/routes/logs.js';
 
 describe('parseLogConfig', () => {
     it('returns defaults when no global block exists', () => {
@@ -169,5 +169,178 @@ app.example.com {
         expect(result).toContain('output file /tmp/new.log');
         expect(result).toContain('format console');
         expect(result).toContain('level WARN');
+    });
+
+    it('replaces an existing log block without duplicating it', () => {
+        const content = `{
+\tlog {
+\t\toutput file /var/log/caddy/old.log {
+\t\t\troll_size 50mb
+\t\t\troll_keep 5
+\t\t}
+\t\tformat json
+\t\tlevel INFO
+\t}
+}
+
+app.example.com {
+    reverse_proxy localhost:8080
+}`;
+        const result = updateGlobalBlock(content, {
+            enabled: true,
+            path: '/var/log/caddy/new.log',
+            rollSize: '100mb',
+            rollKeep: 10,
+            format: 'console',
+            level: 'DEBUG',
+        });
+        expect(result).toContain('output file /var/log/caddy/new.log');
+        expect(result).not.toContain('old.log');
+        const logCount = (result.match(/^\s*log\s*\{/gm) || []).length;
+        expect(logCount).toBe(1);
+    });
+
+    it('preserves nested acme_dns block when enabling logging', () => {
+        const content = `{
+\tacme_dns cloudflare {
+\t\tapi_token {env.CF_API_TOKEN}
+\t}
+}
+
+app.example.com {
+    reverse_proxy localhost:8080
+}`;
+        const result = updateGlobalBlock(content, {
+            enabled: true,
+            path: '/var/log/caddy/access.log',
+            rollSize: '50mb',
+            rollKeep: 5,
+            format: 'json',
+            level: 'INFO',
+        });
+        expect(result).toContain('acme_dns cloudflare {');
+        expect(result).toContain('api_token {env.CF_API_TOKEN}');
+        expect(result).toContain('log {');
+        expect(result).toContain('format json');
+    });
+
+    it('preserves nested acme_dns block when updating existing log', () => {
+        const content = `{
+\tacme_dns cloudflare {
+\t\tapi_token {env.CF_API_TOKEN}
+\t}
+\tlog {
+\t\toutput file /var/log/caddy/old.log {
+\t\t\troll_size 50mb
+\t\t\troll_keep 5
+\t\t}
+\t\tformat json
+\t\tlevel INFO
+\t}
+}
+
+app.example.com {
+    reverse_proxy localhost:8080
+}`;
+        const result = updateGlobalBlock(content, {
+            enabled: true,
+            path: '/var/log/caddy/new.log',
+            rollSize: '100mb',
+            rollKeep: 10,
+            format: 'console',
+            level: 'DEBUG',
+        });
+        expect(result).toContain('acme_dns cloudflare {');
+        expect(result).toContain('api_token {env.CF_API_TOKEN}');
+        expect(result).toContain('output file /var/log/caddy/new.log');
+        expect(result).not.toContain('old.log');
+    });
+
+    it('preserves multiple nested directives when disabling logging', () => {
+        const content = `{
+\temail admin@example.com
+\tacme_dns cloudflare {
+\t\tapi_token {env.CF_API_TOKEN}
+\t}
+\ton_demand_tls {
+\t\task http://localhost:5555/check
+\t}
+\tlog {
+\t\toutput file /var/log/caddy/access.log {
+\t\t\troll_size 50mb
+\t\t\troll_keep 5
+\t\t}
+\t\tformat json
+\t\tlevel INFO
+\t}
+}
+
+app.example.com {
+    reverse_proxy localhost:8080
+}`;
+        const result = updateGlobalBlock(content, { enabled: false });
+        expect(result).toContain('acme_dns cloudflare {');
+        expect(result).toContain('on_demand_tls {');
+        expect(result).toContain('email admin@example.com');
+        expect(result).not.toContain('log {');
+    });
+
+    it('parses log config alongside nested acme_dns', () => {
+        const config = parseLogConfig(`{
+\tacme_dns cloudflare {
+\t\tapi_token {env.CF_API_TOKEN}
+\t}
+\tlog {
+\t\toutput file /var/log/caddy/access.log {
+\t\t\troll_size 100mb
+\t\t\troll_keep 10
+\t\t}
+\t\tformat console
+\t\tlevel DEBUG
+\t}
+}`);
+        expect(config.enabled).toBe(true);
+        expect(config.path).toBe('/var/log/caddy/access.log');
+        expect(config.rollSize).toBe('100mb');
+        expect(config.rollKeep).toBe(10);
+        expect(config.format).toBe('console');
+        expect(config.level).toBe('DEBUG');
+    });
+});
+
+describe('extractGlobalBlock', () => {
+    it('returns null when no global block exists', () => {
+        expect(extractGlobalBlock('app.example.com {\n}')).toBeNull();
+    });
+
+    it('extracts a global block with nested directives', () => {
+        const content = `{
+\tacme_dns cloudflare {
+\t\tapi_token {env.CF_API_TOKEN}
+\t}
+}`;
+        const result = extractGlobalBlock(content);
+        expect(result).not.toBeNull();
+        expect(result.text).toBe(content);
+        expect(result.inner).toContain('acme_dns');
+    });
+});
+
+describe('extractDirectiveBlock', () => {
+    it('returns null when directive is absent', () => {
+        expect(extractDirectiveBlock('\temail admin@example.com', 'log')).toBeNull();
+    });
+
+    it('extracts a nested directive block', () => {
+        const inner = `\tlog {
+\t\toutput file /tmp/x.log {
+\t\t\troll_size 50mb
+\t\t}
+\t\tformat json
+\t}`;
+        const result = extractDirectiveBlock(inner, 'log');
+        expect(result).not.toBeNull();
+        expect(result.inner).toContain('format json');
+        expect(result.inner).toContain('roll_size 50mb');
     });
 });

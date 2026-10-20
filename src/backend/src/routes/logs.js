@@ -12,6 +12,63 @@ const TAIL_LINES = 200;
 
 // ── Log config parsing ────────────────────────────────────────────────────────
 
+function extractGlobalBlock(content) {
+    const lines = content.split('\n');
+    let startIdx = -1;
+    let endIdx = -1;
+    let depth = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+        const trimmed = lines[i].trim();
+        if (startIdx === -1 && trimmed === '{') {
+            startIdx = i;
+            depth = 1;
+            continue;
+        }
+        if (startIdx !== -1 && endIdx === -1) {
+            for (const ch of lines[i]) {
+                if (ch === '{') depth++;
+                if (ch === '}') depth--;
+            }
+            if (depth === 0) {
+                endIdx = i;
+                break;
+            }
+        }
+    }
+
+    if (startIdx === -1) return null;
+    return {
+        text: lines.slice(startIdx, endIdx + 1).join('\n'),
+        inner: lines.slice(startIdx + 1, endIdx).join('\n'),
+        startIdx,
+        endIdx,
+    };
+}
+
+function extractDirectiveBlock(text, directive) {
+    const pattern = new RegExp(`(^|\\n)([ \\t]*)${directive}\\s*\\{`, 'm');
+    const match = text.match(pattern);
+    if (!match) return null;
+
+    const blockStart = match.index + match[0].length;
+    let depth = 1;
+    let i = blockStart;
+    while (i < text.length && depth > 0) {
+        if (text[i] === '{') depth++;
+        else if (text[i] === '}') depth--;
+        i++;
+    }
+
+    const fullStart = match.index + match[1].length;
+    return {
+        fullMatch: text.slice(fullStart, i),
+        inner: text.slice(blockStart, i - 1),
+        start: fullStart,
+        end: i,
+    };
+}
+
 function parseLogConfig(content) {
     const defaultConfig = {
         enabled: false,
@@ -22,40 +79,13 @@ function parseLogConfig(content) {
         level: 'INFO',
     };
 
-    const lines = content.split('\n');
-    let globalLines = [];
-    let inGlobal = false;
-    let depth = 0;
-    let globalDone = false;
+    const global = extractGlobalBlock(content);
+    if (!global) return defaultConfig;
 
-    for (const line of lines) {
-        const trimmed = line.trim();
-        if (!globalDone && !inGlobal && trimmed === '{') {
-            inGlobal = true;
-            depth = 1;
-            globalLines.push(line);
-            continue;
-        }
-        if (inGlobal) {
-            globalLines.push(line);
-            for (const ch of line) {
-                if (ch === '{') depth++;
-                if (ch === '}') depth--;
-            }
-            if (depth === 0) {
-                inGlobal = false;
-                globalDone = true;
-            }
-        }
-    }
+    const log = extractDirectiveBlock(global.inner, 'log');
+    if (!log) return defaultConfig;
 
-    if (!globalLines.length) return defaultConfig;
-    const globalBlock = globalLines.join('\n');
-
-    const logMatch = globalBlock.match(/\blog\s*\{([\s\S]*?)\n\t?\}/m);
-    if (!logMatch) return defaultConfig;
-
-    const logBlock = logMatch[1];
+    const logBlock = log.inner;
     const config = { ...defaultConfig, enabled: true };
 
     const fileMatch = logBlock.match(/output\s+file\s+(\S+)/);
@@ -91,25 +121,25 @@ function buildLogBlock(config) {
 
 function updateGlobalBlock(content, logConfig) {
     const logBlock = buildLogBlock(logConfig);
+    const global = extractGlobalBlock(content);
 
-    const globalMatch = content.match(/^\{([^}]*(?:\{[^}]*\}[^}]*)*)\}/ms);
-
-    if (!globalMatch) {
+    if (!global) {
         if (!logBlock) return content;
         return `{\n${logBlock}\n}\n\n${content.trim()}\n`;
     }
 
-    const fullGlobal = globalMatch[0];
-    const innerGlobal = globalMatch[1];
-
-    const withoutLog = innerGlobal.replace(/\n?\s*log\s*\{[^}]*(?:\{[^}]*\}[^}]*)*\}/ms, '');
+    let inner = global.inner;
+    const log = extractDirectiveBlock(inner, 'log');
+    if (log) {
+        inner = inner.slice(0, log.start) + inner.slice(log.end);
+    }
 
     const newInner = logBlock
-        ? `${withoutLog.trimEnd()}\n${logBlock}\n`
-        : withoutLog;
+        ? `${inner.trimEnd()}\n${logBlock}\n`
+        : inner;
 
     const newGlobal = `{${newInner}}`;
-    return content.replace(fullGlobal, newGlobal);
+    return content.replace(global.text, newGlobal);
 }
 
 // ── Routes ────────────────────────────────────────────────────────────────────
@@ -216,4 +246,4 @@ router.get('/stream', async (req, res) => {
 });
 
 export default router;
-export { appLogsRouter, parseLogConfig, buildLogBlock, updateGlobalBlock };
+export { appLogsRouter, parseLogConfig, buildLogBlock, updateGlobalBlock, extractGlobalBlock, extractDirectiveBlock };
