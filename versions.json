@@ -71,6 +71,7 @@
         "edge-284e0f4"
       ],
       "frontend": [
+        "edge-573d660",
         "edge-a4fbf1a",
         "edge-57caad0",
         "edge-84bb43d",
@@ -89,8 +90,7 @@
         "edge-8e489de",
         "edge-271a01b",
         "edge-c4b0e32",
-        "edge-82a919a",
-        "edge-afb0e49"
+        "edge-82a919a"
       ]
     },
     "beta": {
