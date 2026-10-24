@@ -18,6 +18,7 @@ import { getServers } from '../observations.js';
 import { validateContainerName, validatePath } from '../validation.js';
 import { UNCHANGED, verificationWarning, verifyAfterTimeout, verifyLiveObject, verifyLiveObjectRemoved } from '../configVerification.js';
 import { changeResultFields, queueCaddyfileChange, saveCaddyfileChange } from './caddyfile.js';
+import { recordLocalChange } from '../configDrift.js';
 import { getAuthentication } from '../middleware/auth.js';
 
 const router = Router();
@@ -282,6 +283,7 @@ router.patch('/:id', async (req, res) => {
             const verify = () => verifyLiveObject(req.instance, id, route);
             if (!oldDomain) {
                 const verification = { file: UNCHANGED, live: await applyAdminOnly(patchLive, verify) };
+                await recordLocalChange(req.instance, { content: null, verification, verifyLive: verify });
                 return { applied: true, verification, ...verificationWarning(verification) };
             }
             return save(async previous => {
@@ -313,6 +315,7 @@ router.delete('/:id', async (req, res) => {
             const verify = () => verifyLiveObjectRemoved(req.instance, id);
             if (!domain) {
                 const verification = { file: UNCHANGED, live: await applyAdminOnly(deleteLive, verify) };
+                await recordLocalChange(req.instance, { content: null, verification, verifyLive: verify });
                 return { applied: true, verification, ...verificationWarning(verification) };
             }
             return save(async previous => removeSiteBlock(previous || '', domain, await getCaddyEnv(req.instance.containerName)),
