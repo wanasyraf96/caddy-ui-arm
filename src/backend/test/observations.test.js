@@ -15,9 +15,10 @@ async function listen(server) {
 }
 
 // A stand-in admin API serving one site that proxies to `upstream`, counting
-// config reads. `failNextRead` simulates an outage; `hasRoute` an external removal.
+// config reads. `failNextRead` simulates an outage; `nextLoad` intercepts
+// the reload; `hasRoute` an external removal.
 async function fakeCaddy(upstream) {
-    const caddy = { configReads: 0, failNextRead: false, hasRoute: true };
+    const caddy = { configReads: 0, failNextRead: false, nextLoad: null, hasRoute: true };
     caddy.server = createHttpServer((req, res) => {
         if (req.method === 'GET' && req.url === '/config/apps/http/servers') {
             caddy.configReads++;
@@ -177,6 +178,14 @@ describe('shared configuration and upstream observations', () => {
         await get('/status');
         expect(caddy.configReads).toBe(2);
         expect(dials).toBe(2);
+    });
+
+    it('reads again after a failed configuration write, which may have applied partially', async () => {
+        await get('/status');
+        caddy.nextLoad = respond => respond(400);
+        await expect(caddyLoad('example.com {\n}\n', caddy.adminUrl)).rejects.toThrow('Caddy reload failed');
+        await get('/status');
+        expect(caddy.configReads).toBe(2);
     });
 
     it.each([

@@ -96,8 +96,10 @@ includes both application tests and the real-service/browser integration job.
 
 When upgrading the production Node major, update `.node-version` and the Node
 stages in both Dockerfiles together, run the checks on that runtime, and update
-the setup instructions. `test:workflows` rejects mismatched Docker Node stages or
-workflow setup that overrides the shared version. GitHub Actions' own internal
+the setup instructions. `test:workflows` rejects mismatched Docker Node stages,
+workflow setup that overrides the shared version, and package `engines.node`
+fields that don't require that major. Package manifests don't need an `engines`
+field; `.node-version` is the source of truth. GitHub Actions' own internal
 JavaScript runtimes are managed by the actions and are separate from this policy.
 
 ## Verifying UI changes
@@ -133,6 +135,35 @@ layout.
    both after squash-merging.
 6. Open the PR against `main`; the Test workflow runs automatically.
 
+## Releases
+
+Stable releases are cut by release-please. Every push to `main` updates one open
+release PR (`chore(main): release X.Y.Z`) with the changelog and version so far.
+Merging that PR tags the release, and the Release workflow publishes both images
+with that version.
+
+Merging a feature or fix doesn't mean releasing it right away. Changes reach the
+`edge` images as soon as they land on `main` and accumulate in the release PR
+until it's worth shipping:
+
+- **Cadence:** leave the release PR open until it has enough changes to justify a
+  release. Both maintainers approve it before it's merged. This is a convention,
+  not a branch protection rule.
+- **Before approving:** CI is green on `main` and the changes have been running
+  on `edge`.
+- **Urgent fixes:** `main` is always releasable. If a fix for a security
+  vulnerability, configuration loss or a major regression can't wait, merge the
+  release PR early. It ships everything already on `main`; there are no
+  maintenance branches or backports, so only merge changes that are ready to
+  ship.
+- **What triggers a release:** `feat:`, `fix:`, `perf:`, `refactor:`, `revert:`
+  and `chore:` commits, and any breaking change marked with `!`. `docs:`,
+  `build:`, `ci:`, `test:` and `style:` don't, so use them for changes that
+  don't affect a published image.
+- **Versions:** release-please picks the major, minor or patch bump from the
+  commit types. Every release tags the backend and frontend images with the same
+  version; see [published release images](building.md#published-release-images).
+
 ## Browser-origin security checks
 
 The focused Chromium suite needs backend and dev dependencies plus a Playwright
@@ -151,3 +182,47 @@ that Fetch Metadata is actually absent, forged fetches/forms never reach the
 write handler, and configured same-origin HTTP writes still work. Each case owns
 its browser and servers and closes them on completion or failure. Backend policy
 and route assertions also run with `npm test --prefix src/backend`.
+
+## Configuration reads during writes
+
+`src/backend/src/observations.js` shares short-lived reads of each instance's
+HTTP server configuration (`/config/apps/http/servers`) and the upstream checks
+built from it, so route handlers and monitors don't each call the admin API. A
+settled result is reused for up to `OBSERVATION_MAX_AGE_MS` (5 seconds).
+
+Writes through caddy-ui invalidate those results. `caddy.js` bumps a
+per-instance generation (`markConfigChanged`) when a non-GET admin request or
+`caddyLoad` settles, and `routes/caddyfile.js` does the same after its
+`caddy reload` fallback. The bump happens whether the write succeeds or fails,
+because a failed write may have applied partially.
+
+The contract for reads that overlap a write, agreed in
+[#347](https://github.com/zackwag/caddy-ui/issues/347):
+
+- **Overlapping read:** a read that started before the write settled may return
+  the configuration from before the write. Callers get that snapshot as is; it
+  isn't revalidated or retried.
+- **Read after invalidation:** a read that starts after the write settled always
+  collects fresh configuration, even while an older read is still in flight.
+- **No regression:** an older read never replaces or evicts the newer cached
+  result, whether it succeeds or fails. Upstream checks never outlive the
+  configuration they were collected from.
+- **External changes:** writes made outside caddy-ui, such as another admin API
+  client, aren't tracked. They show up once the cached result is older than
+  `OBSERVATION_MAX_AGE_MS`.
+
+Stronger ordering, such as revalidating every in-flight read after a write, is
+intentionally out of scope. Late completion of a write that timed out is tracked
+in [#348](https://github.com/zackwag/caddy-ui/issues/348).
+
+These tests in `src/backend/test/observations.test.js` protect the contract:
+
+| Guarantee | Test |
+| --- | --- |
+| Fresh read after a successful write | `reads again after a configuration write, however recent the last read` |
+| Fresh read after a failed write | `reads again after a failed configuration write, which may have applied partially` |
+| Overlapping reads return their snapshot without displacing newer results | `keeps the newer config cached when an older pre-write read succeeds` and `... fails` |
+| Upstream checks expire with their source configuration | `refreshes upstream checks when their older source config expires` |
+| Failed reads aren't reused | `does not reuse a failed read, so recovery shows on the next request` |
+
+Update this section and those tests together if the contract changes.

@@ -74,6 +74,7 @@ uncertain rather than rejected:
 caddy/ui can't tell whether Caddy completes a request it stopped waiting for.
 The application log records when a timed-out write later completes or fails.
 
+
 Checks run in the same per-instance queue as other changes, so they never
 compare against another caddy/ui change in progress. They can't rule out a
 change made outside caddy/ui between the write and the readback; that is what
