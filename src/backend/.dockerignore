@@ -1,0 +1,5 @@
+node_modules
+# DNS page: never let tokens or exports into an image layer (DNS.md)
+accounts.json
+*.zone
+dns-records.*

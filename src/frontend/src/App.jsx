@@ -10,6 +10,7 @@ import Logs from "./components/Logs.jsx";
 import Metrics from "./components/Metrics.jsx";
 import Instances from "./components/Instances.jsx";
 import Notifications from "./components/Notifications.jsx";
+import Dns from "./components/Dns.jsx";
 import RoutesPage from "./components/Routes.jsx";
 import Sidebar from "./components/Sidebar.jsx";
 import ThemePicker from "./components/ThemePicker.jsx";
@@ -42,6 +43,7 @@ const TITLE_KEYS = {
     '/logs': 'pages.logs',
     '/metrics': 'pages.metrics',
     '/notifications': 'pages.notifications',
+    '/dns': 'pages.dns',
     '/instances': 'pages.instances',
 };
 
@@ -247,7 +249,7 @@ export default function App() {
     // caddy/ui logs and notification settings don't depend on an instance, so they stay reachable alongside Instances.
     useEffect(() => {
         const path = '/' + location.pathname.split('/')[1];
-        if (noInstances && !['/logs', '/notifications', '/instances'].includes(path)) navigate('/instances', { replace: true });
+        if (noInstances && !['/logs', '/notifications', '/instances', '/dns'].includes(path)) navigate('/instances', { replace: true });
     }, [noInstances, location.pathname, navigate]);
 
     useEffect(() => {
@@ -344,6 +346,7 @@ export default function App() {
                                 <Route path="/logs" element={<Logs toast={toast} onUnauth={onUnauth} noInstances={noInstances} />} />
                                 <Route path="/metrics" element={<Metrics toast={toast} onUnauth={onUnauth} routeChecks={routeChecks} onRouteChecksChange={changeRouteChecks} routeCheckExcludes={routeCheckExcludes} onRouteCheckExcludesChange={changeRouteCheckExcludes} />} />
                                 <Route path="/notifications" element={<Notifications toast={toast} onUnauth={onUnauth} />} />
+                                <Route path="/dns" element={<Dns toast={toast} onUnauth={onUnauth} />} />
                                 <Route path="/instances" element={<Instances toast={toast} onUnauth={onUnauth} confirm={confirm} onInstanceChange={handleInstanceChange} />} />
                                 <Route path="*" element={<Navigate to="/dashboard" replace />} />
                             </Routes>

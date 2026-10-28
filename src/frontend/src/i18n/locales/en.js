@@ -36,6 +36,7 @@ export default {
         metrics: 'Metrics',
         notifications: 'Notifications',
         instances: 'Instances',
+        dns: 'Cloudflare DNS',
     },
 
     errors: {
@@ -121,6 +122,7 @@ export default {
             metrics: 'Metrics',
             notifications: 'Notifications',
             instances: 'Instances',
+            dns: 'DNS',
         },
     },
 

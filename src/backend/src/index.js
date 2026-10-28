@@ -19,6 +19,7 @@ import instancesRouter from './routes/instances.js';
 import logsRouter, { appLogsRouter } from './routes/logs.js';
 import metricsRouter, { rawMetrics } from './routes/metrics.js';
 import notificationsRouter from './routes/notifications.js';
+import dnsRouter from './routes/dns.js';
 import settingsRouter from './routes/settings.js';
 import { initCaddyfileTitles } from './caddyfileTitles.js';
 import routenotesRouter, { cleanupOrphanedNotes } from './routes/routenotes.js';
@@ -117,6 +118,8 @@ app.use('/api/settings', authMiddleware, settingsRouter);
 app.use('/api/custom-themes', authMiddleware, customThemesRouter);
 // Notification settings cover every instance, so they work with none configured
 app.use('/api/notifications', authMiddleware, notificationsRouter);
+// Fork feature: Cloudflare DNS (DNS.md). Needs no Caddy instance.
+app.use('/api/dns', authMiddleware, dnsRouter);
 
 // GET /api/languages -- always public, non-sensitive
 app.get('/api/languages', (req, res) => res.json({

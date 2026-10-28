@@ -21,6 +21,7 @@ const NAV = [
     { path: "/logs", labelKey: "sidebar.nav.logs", icon: "logs" },
     { path: "/metrics", labelKey: "sidebar.nav.metrics", icon: "metrics" },
     { path: "/notifications", labelKey: "sidebar.nav.notifications", icon: "notifications" },
+    { path: "/dns", labelKey: "sidebar.nav.dns", icon: "routes" },
     { path: "/instances", labelKey: "sidebar.nav.instances", icon: "instances" },
 ];
 

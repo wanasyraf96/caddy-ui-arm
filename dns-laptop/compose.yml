@@ -1,0 +1,52 @@
+# caddy-ui with the Cloudflare DNS page — LAPTOP ONLY (see ../DNS.md).
+#
+#   mkdir -p -m 700 ~/.caddy-ui-dns ~/.local/share/caddy-ui-dns
+#   $EDITOR ~/.caddy-ui-dns/accounts.json && chmod 600 ~/.caddy-ui-dns/accounts.json
+#   docker compose -f dns-laptop/compose.yml up -d --build
+#   open http://127.0.0.1:9878/dns          (first visit: create the admin)
+#
+# This instance holds tokens that can rewrite DNS for every zone they cover.
+# It binds 127.0.0.1 ONLY. Never change that, and never run this on a server.
+
+name: caddy-ui-dns
+
+services:
+  backend:
+    build:
+      context: ../src/backend
+      args:
+        APP_VERSION: "3.6.10-dns"
+    image: caddy-ui-dns-backend:local
+    restart: unless-stopped
+    environment:
+      # The ONLY place tokens are read from (src/backend/src/dns/accounts.js).
+      CADDY_UI_DNS_DIR: /run/caddy-ui-dns
+      CADDY_UI_DNS_SNAPSHOTS: /var/lib/caddy-ui-dns
+      CADDY_UI_EXTERNAL_URL: http://127.0.0.1:9878,http://localhost:9878
+      CADDY_UI_UPDATE_CHECK: "false"
+    volumes:
+      # Directory, read-only: never a single-file mount (it goes stale on edit).
+      - ${HOME}/.caddy-ui-dns:/run/caddy-ui-dns:ro
+      # Snapshots: the before-state of every apply. Confidential (origin IPs),
+      # kept OUTSIDE every repository.
+      - ${HOME}/.local/share/caddy-ui-dns:/var/lib/caddy-ui-dns
+      - state:/etc/caddy-ui
+    networks:
+      dns:
+        # The frontend's nginx proxies to this exact name.
+        aliases: [caddy-ui-backend]
+
+  frontend:
+    build: ../src/frontend
+    image: caddy-ui-dns-frontend:local
+    restart: unless-stopped
+    depends_on: [backend]
+    ports:
+      - "127.0.0.1:9878:80"
+    networks: [dns]
+
+networks:
+  dns:
+
+volumes:
+  state:

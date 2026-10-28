@@ -163,3 +163,13 @@ src/frontend/dist-playground/
 # Generated documentation screenshots and localization coverage graph
 docs/src/screenshots/*.png
 docs/src/assets/localization-coverage.svg
+
+# DNS page (DNS.md): tokens, exports and snapshots must never be committed —
+# this fork is public. Exports reveal origin IPs behind Cloudflare's proxy.
+accounts.json
+.caddy-ui-dns/
+caddy-ui-dns/
+dns-records.json
+dns-records.csv
+dns-export.zone
+*.zone
